@@ -1,0 +1,10 @@
+ignore:
+  resource_names:
+      - Group
+      - IdentityProvider
+      - ResourceServer
+      - UserImportJob
+      - UserPool
+      - UserPoolClient
+      - UserPoolDomain
+model_name: cognito-idp
