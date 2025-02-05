@@ -1,5 +1,5 @@
-	output, err := rm.sdkapi.ListTagsForResourceWithContext(
-		ctx, 
+	output, err := rm.sdkapi.ListTagsForResource(
+		ctx,
 		&svcsdk.ListTagsForResourceInput{
 			ResourceArn: (*string)(ko.Status.ACKResourceMetadata.ARN),
 		},
@@ -9,4 +9,4 @@
 		return nil, err
 	}
 
-	ko.Spec.Tags = output.Tags
+	ko.Spec.Tags = aws.StringMap(output.Tags)

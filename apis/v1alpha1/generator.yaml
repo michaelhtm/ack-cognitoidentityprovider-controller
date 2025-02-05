@@ -1,12 +1,21 @@
 ignore:
+  shape_names:
+      - AdvancedSecurityAdditionalFlowsType
+      - SignInPolicyType
   resource_names:
       - Group
       - IdentityProvider
+      - ManagedLoginBranding
       - ResourceServer
       - UserImportJob
       - UserPoolClient
       - UserPoolDomain
-model_name: cognito-idp
+  field_paths:
+      - PasswordPolicyType.PasswordHistorySize
+      - CreateUserPoolInput.UserPoolTier
+      - CreateUserPoolOutput.UserPool.UserPoolTier
+sdk_names:
+  model_name: cognito-identity-provider
 
 resources:
   UserPool:

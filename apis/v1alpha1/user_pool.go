@@ -38,9 +38,9 @@ type UserPoolSpec struct {
 	AliasAttributes []*string `json:"aliasAttributes,omitempty"`
 	// The attributes to be auto-verified. Possible values: email, phone_number.
 	AutoVerifiedAttributes []*string `json:"autoVerifiedAttributes,omitempty"`
-	// When active, DeletionProtection prevents accidental deletion of your user
-	// pool. Before you can delete a user pool that you have protected against deletion,
-	// you must deactivate this feature.
+	// When active, DeletionProtection prevents accidental deletion of your userpool.
+	// Before you can delete a user pool that you have protected against deletion,
+	// youmust deactivate this feature.
 	//
 	// When you try to delete a protected user pool in a DeleteUserPool API request,
 	// Amazon Cognito returns an InvalidParameterException error. To delete a protected
@@ -61,16 +61,9 @@ type UserPoolSpec struct {
 	EmailVerificationMessage *string `json:"emailVerificationMessage,omitempty"`
 	// This parameter is no longer used. See VerificationMessageTemplateType (https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_VerificationMessageTemplateType.html).
 	EmailVerificationSubject *string `json:"emailVerificationSubject,omitempty"`
-	// The Lambda trigger configuration information for the new user pool.
-	//
-	// In a push model, event sources (such as Amazon S3 and custom applications)
-	// need permission to invoke a function. So you must make an extra call to add
-	// permission for these event sources to invoke your Lambda function.
-	//
-	// For more information on using the Lambda API to add permission, see AddPermission
-	// (https://docs.aws.amazon.com/lambda/latest/dg/API_AddPermission.html).
-	//
-	// For adding permission using the CLI, see add-permission (https://docs.aws.amazon.com/cli/latest/reference/lambda/add-permission.html).
+	// A collection of user pool Lambda triggers. Amazon Cognito invokes triggers
+	// at several possible stages of authentication operations. Triggers can modify
+	// the outcome of the operations that invoked them.
 	LambdaConfig *LambdaConfigType `json:"lambdaConfig,omitempty"`
 	// Specifies MFA configuration details.
 	MFAConfiguration *string `json:"mfaConfiguration,omitempty"`
@@ -96,10 +89,10 @@ type UserPoolSpec struct {
 	// The tags to assign to the user pool.
 	Tags map[string]*string `json:"tags,omitempty"`
 	// The settings for updates to user attributes. These settings include the property
-	// AttributesRequireVerificationBeforeUpdate, a user-pool setting that tells
+	// AttributesRequireVerificationBeforeUpdate,a user-pool setting that tells
 	// Amazon Cognito how to handle changes to the value of your users' email address
-	// and phone number attributes. For more information, see Verifying updates
-	// to email addresses and phone numbers (https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-email-phone-verification.html#user-pool-settings-verifications-verify-attribute-updates).
+	// and phone number attributes. Formore information, see Verifying updates to
+	// email addresses and phone numbers (https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-email-phone-verification.html#user-pool-settings-verifications-verify-attribute-updates).
 	UserAttributeUpdateSettings *UserAttributeUpdateSettingsType `json:"userAttributeUpdateSettings,omitempty"`
 	// User pool add-ons. Contains settings for activation of advanced security
 	// features. To log user security information but take no action, set to AUDIT.
@@ -127,8 +120,14 @@ type UserPoolSpec struct {
 	// This configuration is immutable after you set it. For more information, see
 	// UsernameConfigurationType (https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_UsernameConfigurationType.html).
 	UsernameConfiguration *UsernameConfigurationType `json:"usernameConfiguration,omitempty"`
-	// The template for the verification message that the user sees when the app
-	// requests permission to access the user's information.
+	// The template for the verification message that your user pool delivers to
+	// users who set an email address or phone number attribute.
+	//
+	// Set the email message type that corresponds to your DefaultEmailOption selection.
+	// For CONFIRM_WITH_LINK, specify an EmailMessageByLink and leave EmailMessage
+	// blank. For CONFIRM_WITH_CODE, specify an EmailMessage and leave EmailMessageByLink
+	// blank. When you supply both parameters with either choice, Amazon Cognito
+	// returns an error.
 	VerificationMessageTemplate *VerificationMessageTemplateType `json:"verificationMessageTemplate,omitempty"`
 }
 
@@ -181,7 +180,7 @@ type UserPoolStatus struct {
 	// prefix, and developer attributes with a dev: prefix. For more information,
 	// see User pool attributes (https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-attributes.html).
 	//
-	// Developer-only attributes are a legacy feature of user pools, are read-only
+	// Developer-only attributes are a legacy feature of user pools, and are read-only
 	// to all app clients. You can create and update developer-only attributes only
 	// with IAM-authenticated API operations. Use app client read/write permissions
 	// instead.

@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 
@@ -28,8 +29,10 @@ import (
 	ackerr "github.com/aws-controllers-k8s/runtime/pkg/errors"
 	ackrequeue "github.com/aws-controllers-k8s/runtime/pkg/requeue"
 	ackrtlog "github.com/aws-controllers-k8s/runtime/pkg/runtime/log"
-	"github.com/aws/aws-sdk-go/aws"
-	svcsdk "github.com/aws/aws-sdk-go/service/cognitoidentityprovider"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	svcsdk "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	svcsdktypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	smithy "github.com/aws/smithy-go"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -40,8 +43,7 @@ import (
 var (
 	_ = &metav1.Time{}
 	_ = strings.ToLower("")
-	_ = &aws.JSONValue{}
-	_ = &svcsdk.CognitoIdentityProvider{}
+	_ = &svcsdk.Client{}
 	_ = &svcapitypes.UserPool{}
 	_ = ackv1alpha1.AWSAccountID("")
 	_ = &ackerr.NotFound
@@ -49,6 +51,7 @@ var (
 	_ = &reflect.Value{}
 	_ = fmt.Sprintf("")
 	_ = &ackrequeue.NoRequeue{}
+	_ = &aws.Config{}
 )
 
 // sdkFind returns SDK-specific information about a supplied resource
@@ -74,13 +77,11 @@ func (rm *resourceManager) sdkFind(
 	}
 
 	var resp *svcsdk.DescribeUserPoolOutput
-	resp, err = rm.sdkapi.DescribeUserPoolWithContext(ctx, input)
+	resp, err = rm.sdkapi.DescribeUserPool(ctx, input)
 	rm.metrics.RecordAPICall("READ_ONE", "DescribeUserPool", err)
 	if err != nil {
-		if reqErr, ok := ackerr.AWSRequestFailure(err); ok && reqErr.StatusCode() == 404 {
-			return nil, ackerr.NotFound
-		}
-		if awsErr, ok := ackerr.AWSError(err); ok && awsErr.Code() == "UNKNOWN" {
+		var awsErr smithy.APIError
+		if errors.As(err, &awsErr) && awsErr.ErrorCode() == "ResourceNotFoundException" {
 			return nil, ackerr.NotFound
 		}
 		return nil, err
@@ -96,11 +97,12 @@ func (rm *resourceManager) sdkFind(
 			f0f0 := []*svcapitypes.RecoveryOptionType{}
 			for _, f0f0iter := range resp.UserPool.AccountRecoverySetting.RecoveryMechanisms {
 				f0f0elem := &svcapitypes.RecoveryOptionType{}
-				if f0f0iter.Name != nil {
-					f0f0elem.Name = f0f0iter.Name
+				if f0f0iter.Name != "" {
+					f0f0elem.Name = aws.String(string(f0f0iter.Name))
 				}
 				if f0f0iter.Priority != nil {
-					f0f0elem.Priority = f0f0iter.Priority
+					priorityCopy := int64(*f0f0iter.Priority)
+					f0f0elem.Priority = &priorityCopy
 				}
 				f0f0 = append(f0f0, f0f0elem)
 			}
@@ -112,9 +114,7 @@ func (rm *resourceManager) sdkFind(
 	}
 	if resp.UserPool.AdminCreateUserConfig != nil {
 		f1 := &svcapitypes.AdminCreateUserConfigType{}
-		if resp.UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly != nil {
-			f1.AllowAdminCreateUserOnly = resp.UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly
-		}
+		f1.AllowAdminCreateUserOnly = &resp.UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly
 		if resp.UserPool.AdminCreateUserConfig.InviteMessageTemplate != nil {
 			f1f1 := &svcapitypes.MessageTemplateType{}
 			if resp.UserPool.AdminCreateUserConfig.InviteMessageTemplate.EmailMessage != nil {
@@ -128,9 +128,8 @@ func (rm *resourceManager) sdkFind(
 			}
 			f1.InviteMessageTemplate = f1f1
 		}
-		if resp.UserPool.AdminCreateUserConfig.UnusedAccountValidityDays != nil {
-			f1.UnusedAccountValidityDays = resp.UserPool.AdminCreateUserConfig.UnusedAccountValidityDays
-		}
+		unusedAccountValidityDaysCopy := int64(resp.UserPool.AdminCreateUserConfig.UnusedAccountValidityDays)
+		f1.UnusedAccountValidityDays = &unusedAccountValidityDaysCopy
 		ko.Spec.AdminCreateUserConfig = f1
 	} else {
 		ko.Spec.AdminCreateUserConfig = nil
@@ -138,9 +137,9 @@ func (rm *resourceManager) sdkFind(
 	if resp.UserPool.AliasAttributes != nil {
 		f2 := []*string{}
 		for _, f2iter := range resp.UserPool.AliasAttributes {
-			var f2elem string
-			f2elem = *f2iter
-			f2 = append(f2, &f2elem)
+			var f2elem *string
+			f2elem = aws.String(string(f2iter))
+			f2 = append(f2, f2elem)
 		}
 		ko.Spec.AliasAttributes = f2
 	} else {
@@ -156,9 +155,9 @@ func (rm *resourceManager) sdkFind(
 	if resp.UserPool.AutoVerifiedAttributes != nil {
 		f4 := []*string{}
 		for _, f4iter := range resp.UserPool.AutoVerifiedAttributes {
-			var f4elem string
-			f4elem = *f4iter
-			f4 = append(f4, &f4elem)
+			var f4elem *string
+			f4elem = aws.String(string(f4iter))
+			f4 = append(f4, f4elem)
 		}
 		ko.Spec.AutoVerifiedAttributes = f4
 	} else {
@@ -174,19 +173,15 @@ func (rm *resourceManager) sdkFind(
 	} else {
 		ko.Status.CustomDomain = nil
 	}
-	if resp.UserPool.DeletionProtection != nil {
-		ko.Spec.DeletionProtection = resp.UserPool.DeletionProtection
+	if resp.UserPool.DeletionProtection != "" {
+		ko.Spec.DeletionProtection = aws.String(string(resp.UserPool.DeletionProtection))
 	} else {
 		ko.Spec.DeletionProtection = nil
 	}
 	if resp.UserPool.DeviceConfiguration != nil {
 		f8 := &svcapitypes.DeviceConfigurationType{}
-		if resp.UserPool.DeviceConfiguration.ChallengeRequiredOnNewDevice != nil {
-			f8.ChallengeRequiredOnNewDevice = resp.UserPool.DeviceConfiguration.ChallengeRequiredOnNewDevice
-		}
-		if resp.UserPool.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt != nil {
-			f8.DeviceOnlyRememberedOnUserPrompt = resp.UserPool.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt
-		}
+		f8.ChallengeRequiredOnNewDevice = &resp.UserPool.DeviceConfiguration.ChallengeRequiredOnNewDevice
+		f8.DeviceOnlyRememberedOnUserPrompt = &resp.UserPool.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt
 		ko.Spec.DeviceConfiguration = f8
 	} else {
 		ko.Spec.DeviceConfiguration = nil
@@ -201,8 +196,8 @@ func (rm *resourceManager) sdkFind(
 		if resp.UserPool.EmailConfiguration.ConfigurationSet != nil {
 			f10.ConfigurationSet = resp.UserPool.EmailConfiguration.ConfigurationSet
 		}
-		if resp.UserPool.EmailConfiguration.EmailSendingAccount != nil {
-			f10.EmailSendingAccount = resp.UserPool.EmailConfiguration.EmailSendingAccount
+		if resp.UserPool.EmailConfiguration.EmailSendingAccount != "" {
+			f10.EmailSendingAccount = aws.String(string(resp.UserPool.EmailConfiguration.EmailSendingAccount))
 		}
 		if resp.UserPool.EmailConfiguration.From != nil {
 			f10.From = resp.UserPool.EmailConfiguration.From
@@ -232,11 +227,8 @@ func (rm *resourceManager) sdkFind(
 	} else {
 		ko.Spec.EmailVerificationSubject = nil
 	}
-	if resp.UserPool.EstimatedNumberOfUsers != nil {
-		ko.Status.EstimatedNumberOfUsers = resp.UserPool.EstimatedNumberOfUsers
-	} else {
-		ko.Status.EstimatedNumberOfUsers = nil
-	}
+	estimatedNumberOfUsersCopy := int64(resp.UserPool.EstimatedNumberOfUsers)
+	ko.Status.EstimatedNumberOfUsers = &estimatedNumberOfUsersCopy
 	if resp.UserPool.Id != nil {
 		ko.Status.ID = resp.UserPool.Id
 	} else {
@@ -252,8 +244,8 @@ func (rm *resourceManager) sdkFind(
 			if resp.UserPool.LambdaConfig.CustomEmailSender.LambdaArn != nil {
 				f16f1.LambdaARN = resp.UserPool.LambdaConfig.CustomEmailSender.LambdaArn
 			}
-			if resp.UserPool.LambdaConfig.CustomEmailSender.LambdaVersion != nil {
-				f16f1.LambdaVersion = resp.UserPool.LambdaConfig.CustomEmailSender.LambdaVersion
+			if resp.UserPool.LambdaConfig.CustomEmailSender.LambdaVersion != "" {
+				f16f1.LambdaVersion = aws.String(string(resp.UserPool.LambdaConfig.CustomEmailSender.LambdaVersion))
 			}
 			f16.CustomEmailSender = f16f1
 		}
@@ -265,8 +257,8 @@ func (rm *resourceManager) sdkFind(
 			if resp.UserPool.LambdaConfig.CustomSMSSender.LambdaArn != nil {
 				f16f3.LambdaARN = resp.UserPool.LambdaConfig.CustomSMSSender.LambdaArn
 			}
-			if resp.UserPool.LambdaConfig.CustomSMSSender.LambdaVersion != nil {
-				f16f3.LambdaVersion = resp.UserPool.LambdaConfig.CustomSMSSender.LambdaVersion
+			if resp.UserPool.LambdaConfig.CustomSMSSender.LambdaVersion != "" {
+				f16f3.LambdaVersion = aws.String(string(resp.UserPool.LambdaConfig.CustomSMSSender.LambdaVersion))
 			}
 			f16.CustomSMSSender = f16f3
 		}
@@ -296,8 +288,8 @@ func (rm *resourceManager) sdkFind(
 			if resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaArn != nil {
 				f16f11.LambdaARN = resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaArn
 			}
-			if resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaVersion != nil {
-				f16f11.LambdaVersion = resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaVersion
+			if resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaVersion != "" {
+				f16f11.LambdaVersion = aws.String(string(resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaVersion))
 			}
 			f16.PreTokenGenerationConfig = f16f11
 		}
@@ -316,8 +308,8 @@ func (rm *resourceManager) sdkFind(
 	} else {
 		ko.Status.LastModifiedDate = nil
 	}
-	if resp.UserPool.MfaConfiguration != nil {
-		ko.Spec.MFAConfiguration = resp.UserPool.MfaConfiguration
+	if resp.UserPool.MfaConfiguration != "" {
+		ko.Spec.MFAConfiguration = aws.String(string(resp.UserPool.MfaConfiguration))
 	} else {
 		ko.Spec.MFAConfiguration = nil
 	}
@@ -331,23 +323,15 @@ func (rm *resourceManager) sdkFind(
 		if resp.UserPool.Policies.PasswordPolicy != nil {
 			f20f0 := &svcapitypes.PasswordPolicyType{}
 			if resp.UserPool.Policies.PasswordPolicy.MinimumLength != nil {
-				f20f0.MinimumLength = resp.UserPool.Policies.PasswordPolicy.MinimumLength
+				minimumLengthCopy := int64(*resp.UserPool.Policies.PasswordPolicy.MinimumLength)
+				f20f0.MinimumLength = &minimumLengthCopy
 			}
-			if resp.UserPool.Policies.PasswordPolicy.RequireLowercase != nil {
-				f20f0.RequireLowercase = resp.UserPool.Policies.PasswordPolicy.RequireLowercase
-			}
-			if resp.UserPool.Policies.PasswordPolicy.RequireNumbers != nil {
-				f20f0.RequireNumbers = resp.UserPool.Policies.PasswordPolicy.RequireNumbers
-			}
-			if resp.UserPool.Policies.PasswordPolicy.RequireSymbols != nil {
-				f20f0.RequireSymbols = resp.UserPool.Policies.PasswordPolicy.RequireSymbols
-			}
-			if resp.UserPool.Policies.PasswordPolicy.RequireUppercase != nil {
-				f20f0.RequireUppercase = resp.UserPool.Policies.PasswordPolicy.RequireUppercase
-			}
-			if resp.UserPool.Policies.PasswordPolicy.TemporaryPasswordValidityDays != nil {
-				f20f0.TemporaryPasswordValidityDays = resp.UserPool.Policies.PasswordPolicy.TemporaryPasswordValidityDays
-			}
+			f20f0.RequireLowercase = &resp.UserPool.Policies.PasswordPolicy.RequireLowercase
+			f20f0.RequireNumbers = &resp.UserPool.Policies.PasswordPolicy.RequireNumbers
+			f20f0.RequireSymbols = &resp.UserPool.Policies.PasswordPolicy.RequireSymbols
+			f20f0.RequireUppercase = &resp.UserPool.Policies.PasswordPolicy.RequireUppercase
+			temporaryPasswordValidityDaysCopy := int64(resp.UserPool.Policies.PasswordPolicy.TemporaryPasswordValidityDays)
+			f20f0.TemporaryPasswordValidityDays = &temporaryPasswordValidityDaysCopy
 			f20.PasswordPolicy = f20f0
 		}
 		ko.Spec.Policies = f20
@@ -358,8 +342,8 @@ func (rm *resourceManager) sdkFind(
 		f21 := []*svcapitypes.SchemaAttributeType{}
 		for _, f21iter := range resp.UserPool.SchemaAttributes {
 			f21elem := &svcapitypes.SchemaAttributeType{}
-			if f21iter.AttributeDataType != nil {
-				f21elem.AttributeDataType = f21iter.AttributeDataType
+			if f21iter.AttributeDataType != "" {
+				f21elem.AttributeDataType = aws.String(string(f21iter.AttributeDataType))
 			}
 			if f21iter.DeveloperOnlyAttribute != nil {
 				f21elem.DeveloperOnlyAttribute = f21iter.DeveloperOnlyAttribute
@@ -429,8 +413,8 @@ func (rm *resourceManager) sdkFind(
 	} else {
 		ko.Spec.SmsVerificationMessage = nil
 	}
-	if resp.UserPool.Status != nil {
-		ko.Status.Status = resp.UserPool.Status
+	if resp.UserPool.Status != "" {
+		ko.Status.Status = aws.String(string(resp.UserPool.Status))
 	} else {
 		ko.Status.Status = nil
 	}
@@ -439,9 +423,9 @@ func (rm *resourceManager) sdkFind(
 		if resp.UserPool.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate != nil {
 			f27f0 := []*string{}
 			for _, f27f0iter := range resp.UserPool.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate {
-				var f27f0elem string
-				f27f0elem = *f27f0iter
-				f27f0 = append(f27f0, &f27f0elem)
+				var f27f0elem *string
+				f27f0elem = aws.String(string(f27f0iter))
+				f27f0 = append(f27f0, f27f0elem)
 			}
 			f27.AttributesRequireVerificationBeforeUpdate = f27f0
 		}
@@ -451,30 +435,24 @@ func (rm *resourceManager) sdkFind(
 	}
 	if resp.UserPool.UserPoolAddOns != nil {
 		f28 := &svcapitypes.UserPoolAddOnsType{}
-		if resp.UserPool.UserPoolAddOns.AdvancedSecurityMode != nil {
-			f28.AdvancedSecurityMode = resp.UserPool.UserPoolAddOns.AdvancedSecurityMode
+		if resp.UserPool.UserPoolAddOns.AdvancedSecurityMode != "" {
+			f28.AdvancedSecurityMode = aws.String(string(resp.UserPool.UserPoolAddOns.AdvancedSecurityMode))
 		}
 		ko.Spec.UserPoolAddOns = f28
 	} else {
 		ko.Spec.UserPoolAddOns = nil
 	}
 	if resp.UserPool.UserPoolTags != nil {
-		f29 := map[string]*string{}
-		for f29key, f29valiter := range resp.UserPool.UserPoolTags {
-			var f29val string
-			f29val = *f29valiter
-			f29[f29key] = &f29val
-		}
-		ko.Spec.UserPoolTags = f29
+		ko.Spec.UserPoolTags = aws.StringMap(resp.UserPool.UserPoolTags)
 	} else {
 		ko.Spec.UserPoolTags = nil
 	}
 	if resp.UserPool.UsernameAttributes != nil {
 		f30 := []*string{}
 		for _, f30iter := range resp.UserPool.UsernameAttributes {
-			var f30elem string
-			f30elem = *f30iter
-			f30 = append(f30, &f30elem)
+			var f30elem *string
+			f30elem = aws.String(string(f30iter))
+			f30 = append(f30, f30elem)
 		}
 		ko.Spec.UsernameAttributes = f30
 	} else {
@@ -491,8 +469,8 @@ func (rm *resourceManager) sdkFind(
 	}
 	if resp.UserPool.VerificationMessageTemplate != nil {
 		f32 := &svcapitypes.VerificationMessageTemplateType{}
-		if resp.UserPool.VerificationMessageTemplate.DefaultEmailOption != nil {
-			f32.DefaultEmailOption = resp.UserPool.VerificationMessageTemplate.DefaultEmailOption
+		if resp.UserPool.VerificationMessageTemplate.DefaultEmailOption != "" {
+			f32.DefaultEmailOption = aws.String(string(resp.UserPool.VerificationMessageTemplate.DefaultEmailOption))
 		}
 		if resp.UserPool.VerificationMessageTemplate.EmailMessage != nil {
 			f32.EmailMessage = resp.UserPool.VerificationMessageTemplate.EmailMessage
@@ -515,7 +493,7 @@ func (rm *resourceManager) sdkFind(
 	}
 
 	rm.setStatusDefaults(ko)
-	output, err := rm.sdkapi.ListTagsForResourceWithContext(
+	output, err := rm.sdkapi.ListTagsForResource(
 		ctx,
 		&svcsdk.ListTagsForResourceInput{
 			ResourceArn: (*string)(ko.Status.ACKResourceMetadata.ARN),
@@ -526,8 +504,7 @@ func (rm *resourceManager) sdkFind(
 		return nil, err
 	}
 
-	ko.Spec.Tags = output.Tags
-
+	ko.Spec.Tags = aws.StringMap(output.Tags)
 	return &resource{ko}, nil
 }
 
@@ -549,7 +526,7 @@ func (rm *resourceManager) newDescribeRequestPayload(
 	res := &svcsdk.DescribeUserPoolInput{}
 
 	if r.ko.Status.ID != nil {
-		res.SetUserPoolId(*r.ko.Status.ID)
+		res.UserPoolId = r.ko.Status.ID
 	}
 
 	return res, nil
@@ -574,7 +551,7 @@ func (rm *resourceManager) sdkCreate(
 
 	var resp *svcsdk.CreateUserPoolOutput
 	_ = resp
-	resp, err = rm.sdkapi.CreateUserPoolWithContext(ctx, input)
+	resp, err = rm.sdkapi.CreateUserPool(ctx, input)
 	rm.metrics.RecordAPICall("CREATE", "CreateUserPool", err)
 	if err != nil {
 		return nil, err
@@ -589,11 +566,12 @@ func (rm *resourceManager) sdkCreate(
 			f0f0 := []*svcapitypes.RecoveryOptionType{}
 			for _, f0f0iter := range resp.UserPool.AccountRecoverySetting.RecoveryMechanisms {
 				f0f0elem := &svcapitypes.RecoveryOptionType{}
-				if f0f0iter.Name != nil {
-					f0f0elem.Name = f0f0iter.Name
+				if f0f0iter.Name != "" {
+					f0f0elem.Name = aws.String(string(f0f0iter.Name))
 				}
 				if f0f0iter.Priority != nil {
-					f0f0elem.Priority = f0f0iter.Priority
+					priorityCopy := int64(*f0f0iter.Priority)
+					f0f0elem.Priority = &priorityCopy
 				}
 				f0f0 = append(f0f0, f0f0elem)
 			}
@@ -605,9 +583,7 @@ func (rm *resourceManager) sdkCreate(
 	}
 	if resp.UserPool.AdminCreateUserConfig != nil {
 		f1 := &svcapitypes.AdminCreateUserConfigType{}
-		if resp.UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly != nil {
-			f1.AllowAdminCreateUserOnly = resp.UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly
-		}
+		f1.AllowAdminCreateUserOnly = &resp.UserPool.AdminCreateUserConfig.AllowAdminCreateUserOnly
 		if resp.UserPool.AdminCreateUserConfig.InviteMessageTemplate != nil {
 			f1f1 := &svcapitypes.MessageTemplateType{}
 			if resp.UserPool.AdminCreateUserConfig.InviteMessageTemplate.EmailMessage != nil {
@@ -621,9 +597,8 @@ func (rm *resourceManager) sdkCreate(
 			}
 			f1.InviteMessageTemplate = f1f1
 		}
-		if resp.UserPool.AdminCreateUserConfig.UnusedAccountValidityDays != nil {
-			f1.UnusedAccountValidityDays = resp.UserPool.AdminCreateUserConfig.UnusedAccountValidityDays
-		}
+		unusedAccountValidityDaysCopy := int64(resp.UserPool.AdminCreateUserConfig.UnusedAccountValidityDays)
+		f1.UnusedAccountValidityDays = &unusedAccountValidityDaysCopy
 		ko.Spec.AdminCreateUserConfig = f1
 	} else {
 		ko.Spec.AdminCreateUserConfig = nil
@@ -631,9 +606,9 @@ func (rm *resourceManager) sdkCreate(
 	if resp.UserPool.AliasAttributes != nil {
 		f2 := []*string{}
 		for _, f2iter := range resp.UserPool.AliasAttributes {
-			var f2elem string
-			f2elem = *f2iter
-			f2 = append(f2, &f2elem)
+			var f2elem *string
+			f2elem = aws.String(string(f2iter))
+			f2 = append(f2, f2elem)
 		}
 		ko.Spec.AliasAttributes = f2
 	} else {
@@ -649,9 +624,9 @@ func (rm *resourceManager) sdkCreate(
 	if resp.UserPool.AutoVerifiedAttributes != nil {
 		f4 := []*string{}
 		for _, f4iter := range resp.UserPool.AutoVerifiedAttributes {
-			var f4elem string
-			f4elem = *f4iter
-			f4 = append(f4, &f4elem)
+			var f4elem *string
+			f4elem = aws.String(string(f4iter))
+			f4 = append(f4, f4elem)
 		}
 		ko.Spec.AutoVerifiedAttributes = f4
 	} else {
@@ -667,19 +642,15 @@ func (rm *resourceManager) sdkCreate(
 	} else {
 		ko.Status.CustomDomain = nil
 	}
-	if resp.UserPool.DeletionProtection != nil {
-		ko.Spec.DeletionProtection = resp.UserPool.DeletionProtection
+	if resp.UserPool.DeletionProtection != "" {
+		ko.Spec.DeletionProtection = aws.String(string(resp.UserPool.DeletionProtection))
 	} else {
 		ko.Spec.DeletionProtection = nil
 	}
 	if resp.UserPool.DeviceConfiguration != nil {
 		f8 := &svcapitypes.DeviceConfigurationType{}
-		if resp.UserPool.DeviceConfiguration.ChallengeRequiredOnNewDevice != nil {
-			f8.ChallengeRequiredOnNewDevice = resp.UserPool.DeviceConfiguration.ChallengeRequiredOnNewDevice
-		}
-		if resp.UserPool.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt != nil {
-			f8.DeviceOnlyRememberedOnUserPrompt = resp.UserPool.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt
-		}
+		f8.ChallengeRequiredOnNewDevice = &resp.UserPool.DeviceConfiguration.ChallengeRequiredOnNewDevice
+		f8.DeviceOnlyRememberedOnUserPrompt = &resp.UserPool.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt
 		ko.Spec.DeviceConfiguration = f8
 	} else {
 		ko.Spec.DeviceConfiguration = nil
@@ -694,8 +665,8 @@ func (rm *resourceManager) sdkCreate(
 		if resp.UserPool.EmailConfiguration.ConfigurationSet != nil {
 			f10.ConfigurationSet = resp.UserPool.EmailConfiguration.ConfigurationSet
 		}
-		if resp.UserPool.EmailConfiguration.EmailSendingAccount != nil {
-			f10.EmailSendingAccount = resp.UserPool.EmailConfiguration.EmailSendingAccount
+		if resp.UserPool.EmailConfiguration.EmailSendingAccount != "" {
+			f10.EmailSendingAccount = aws.String(string(resp.UserPool.EmailConfiguration.EmailSendingAccount))
 		}
 		if resp.UserPool.EmailConfiguration.From != nil {
 			f10.From = resp.UserPool.EmailConfiguration.From
@@ -725,11 +696,8 @@ func (rm *resourceManager) sdkCreate(
 	} else {
 		ko.Spec.EmailVerificationSubject = nil
 	}
-	if resp.UserPool.EstimatedNumberOfUsers != nil {
-		ko.Status.EstimatedNumberOfUsers = resp.UserPool.EstimatedNumberOfUsers
-	} else {
-		ko.Status.EstimatedNumberOfUsers = nil
-	}
+	estimatedNumberOfUsersCopy := int64(resp.UserPool.EstimatedNumberOfUsers)
+	ko.Status.EstimatedNumberOfUsers = &estimatedNumberOfUsersCopy
 	if resp.UserPool.Id != nil {
 		ko.Status.ID = resp.UserPool.Id
 	} else {
@@ -745,8 +713,8 @@ func (rm *resourceManager) sdkCreate(
 			if resp.UserPool.LambdaConfig.CustomEmailSender.LambdaArn != nil {
 				f16f1.LambdaARN = resp.UserPool.LambdaConfig.CustomEmailSender.LambdaArn
 			}
-			if resp.UserPool.LambdaConfig.CustomEmailSender.LambdaVersion != nil {
-				f16f1.LambdaVersion = resp.UserPool.LambdaConfig.CustomEmailSender.LambdaVersion
+			if resp.UserPool.LambdaConfig.CustomEmailSender.LambdaVersion != "" {
+				f16f1.LambdaVersion = aws.String(string(resp.UserPool.LambdaConfig.CustomEmailSender.LambdaVersion))
 			}
 			f16.CustomEmailSender = f16f1
 		}
@@ -758,8 +726,8 @@ func (rm *resourceManager) sdkCreate(
 			if resp.UserPool.LambdaConfig.CustomSMSSender.LambdaArn != nil {
 				f16f3.LambdaARN = resp.UserPool.LambdaConfig.CustomSMSSender.LambdaArn
 			}
-			if resp.UserPool.LambdaConfig.CustomSMSSender.LambdaVersion != nil {
-				f16f3.LambdaVersion = resp.UserPool.LambdaConfig.CustomSMSSender.LambdaVersion
+			if resp.UserPool.LambdaConfig.CustomSMSSender.LambdaVersion != "" {
+				f16f3.LambdaVersion = aws.String(string(resp.UserPool.LambdaConfig.CustomSMSSender.LambdaVersion))
 			}
 			f16.CustomSMSSender = f16f3
 		}
@@ -789,8 +757,8 @@ func (rm *resourceManager) sdkCreate(
 			if resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaArn != nil {
 				f16f11.LambdaARN = resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaArn
 			}
-			if resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaVersion != nil {
-				f16f11.LambdaVersion = resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaVersion
+			if resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaVersion != "" {
+				f16f11.LambdaVersion = aws.String(string(resp.UserPool.LambdaConfig.PreTokenGenerationConfig.LambdaVersion))
 			}
 			f16.PreTokenGenerationConfig = f16f11
 		}
@@ -809,8 +777,8 @@ func (rm *resourceManager) sdkCreate(
 	} else {
 		ko.Status.LastModifiedDate = nil
 	}
-	if resp.UserPool.MfaConfiguration != nil {
-		ko.Spec.MFAConfiguration = resp.UserPool.MfaConfiguration
+	if resp.UserPool.MfaConfiguration != "" {
+		ko.Spec.MFAConfiguration = aws.String(string(resp.UserPool.MfaConfiguration))
 	} else {
 		ko.Spec.MFAConfiguration = nil
 	}
@@ -824,23 +792,15 @@ func (rm *resourceManager) sdkCreate(
 		if resp.UserPool.Policies.PasswordPolicy != nil {
 			f20f0 := &svcapitypes.PasswordPolicyType{}
 			if resp.UserPool.Policies.PasswordPolicy.MinimumLength != nil {
-				f20f0.MinimumLength = resp.UserPool.Policies.PasswordPolicy.MinimumLength
+				minimumLengthCopy := int64(*resp.UserPool.Policies.PasswordPolicy.MinimumLength)
+				f20f0.MinimumLength = &minimumLengthCopy
 			}
-			if resp.UserPool.Policies.PasswordPolicy.RequireLowercase != nil {
-				f20f0.RequireLowercase = resp.UserPool.Policies.PasswordPolicy.RequireLowercase
-			}
-			if resp.UserPool.Policies.PasswordPolicy.RequireNumbers != nil {
-				f20f0.RequireNumbers = resp.UserPool.Policies.PasswordPolicy.RequireNumbers
-			}
-			if resp.UserPool.Policies.PasswordPolicy.RequireSymbols != nil {
-				f20f0.RequireSymbols = resp.UserPool.Policies.PasswordPolicy.RequireSymbols
-			}
-			if resp.UserPool.Policies.PasswordPolicy.RequireUppercase != nil {
-				f20f0.RequireUppercase = resp.UserPool.Policies.PasswordPolicy.RequireUppercase
-			}
-			if resp.UserPool.Policies.PasswordPolicy.TemporaryPasswordValidityDays != nil {
-				f20f0.TemporaryPasswordValidityDays = resp.UserPool.Policies.PasswordPolicy.TemporaryPasswordValidityDays
-			}
+			f20f0.RequireLowercase = &resp.UserPool.Policies.PasswordPolicy.RequireLowercase
+			f20f0.RequireNumbers = &resp.UserPool.Policies.PasswordPolicy.RequireNumbers
+			f20f0.RequireSymbols = &resp.UserPool.Policies.PasswordPolicy.RequireSymbols
+			f20f0.RequireUppercase = &resp.UserPool.Policies.PasswordPolicy.RequireUppercase
+			temporaryPasswordValidityDaysCopy := int64(resp.UserPool.Policies.PasswordPolicy.TemporaryPasswordValidityDays)
+			f20f0.TemporaryPasswordValidityDays = &temporaryPasswordValidityDaysCopy
 			f20.PasswordPolicy = f20f0
 		}
 		ko.Spec.Policies = f20
@@ -851,8 +811,8 @@ func (rm *resourceManager) sdkCreate(
 		f21 := []*svcapitypes.SchemaAttributeType{}
 		for _, f21iter := range resp.UserPool.SchemaAttributes {
 			f21elem := &svcapitypes.SchemaAttributeType{}
-			if f21iter.AttributeDataType != nil {
-				f21elem.AttributeDataType = f21iter.AttributeDataType
+			if f21iter.AttributeDataType != "" {
+				f21elem.AttributeDataType = aws.String(string(f21iter.AttributeDataType))
 			}
 			if f21iter.DeveloperOnlyAttribute != nil {
 				f21elem.DeveloperOnlyAttribute = f21iter.DeveloperOnlyAttribute
@@ -922,8 +882,8 @@ func (rm *resourceManager) sdkCreate(
 	} else {
 		ko.Spec.SmsVerificationMessage = nil
 	}
-	if resp.UserPool.Status != nil {
-		ko.Status.Status = resp.UserPool.Status
+	if resp.UserPool.Status != "" {
+		ko.Status.Status = aws.String(string(resp.UserPool.Status))
 	} else {
 		ko.Status.Status = nil
 	}
@@ -932,9 +892,9 @@ func (rm *resourceManager) sdkCreate(
 		if resp.UserPool.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate != nil {
 			f27f0 := []*string{}
 			for _, f27f0iter := range resp.UserPool.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate {
-				var f27f0elem string
-				f27f0elem = *f27f0iter
-				f27f0 = append(f27f0, &f27f0elem)
+				var f27f0elem *string
+				f27f0elem = aws.String(string(f27f0iter))
+				f27f0 = append(f27f0, f27f0elem)
 			}
 			f27.AttributesRequireVerificationBeforeUpdate = f27f0
 		}
@@ -944,30 +904,24 @@ func (rm *resourceManager) sdkCreate(
 	}
 	if resp.UserPool.UserPoolAddOns != nil {
 		f28 := &svcapitypes.UserPoolAddOnsType{}
-		if resp.UserPool.UserPoolAddOns.AdvancedSecurityMode != nil {
-			f28.AdvancedSecurityMode = resp.UserPool.UserPoolAddOns.AdvancedSecurityMode
+		if resp.UserPool.UserPoolAddOns.AdvancedSecurityMode != "" {
+			f28.AdvancedSecurityMode = aws.String(string(resp.UserPool.UserPoolAddOns.AdvancedSecurityMode))
 		}
 		ko.Spec.UserPoolAddOns = f28
 	} else {
 		ko.Spec.UserPoolAddOns = nil
 	}
 	if resp.UserPool.UserPoolTags != nil {
-		f29 := map[string]*string{}
-		for f29key, f29valiter := range resp.UserPool.UserPoolTags {
-			var f29val string
-			f29val = *f29valiter
-			f29[f29key] = &f29val
-		}
-		ko.Spec.UserPoolTags = f29
+		ko.Spec.UserPoolTags = aws.StringMap(resp.UserPool.UserPoolTags)
 	} else {
 		ko.Spec.UserPoolTags = nil
 	}
 	if resp.UserPool.UsernameAttributes != nil {
 		f30 := []*string{}
 		for _, f30iter := range resp.UserPool.UsernameAttributes {
-			var f30elem string
-			f30elem = *f30iter
-			f30 = append(f30, &f30elem)
+			var f30elem *string
+			f30elem = aws.String(string(f30iter))
+			f30 = append(f30, f30elem)
 		}
 		ko.Spec.UsernameAttributes = f30
 	} else {
@@ -984,8 +938,8 @@ func (rm *resourceManager) sdkCreate(
 	}
 	if resp.UserPool.VerificationMessageTemplate != nil {
 		f32 := &svcapitypes.VerificationMessageTemplateType{}
-		if resp.UserPool.VerificationMessageTemplate.DefaultEmailOption != nil {
-			f32.DefaultEmailOption = resp.UserPool.VerificationMessageTemplate.DefaultEmailOption
+		if resp.UserPool.VerificationMessageTemplate.DefaultEmailOption != "" {
+			f32.DefaultEmailOption = aws.String(string(resp.UserPool.VerificationMessageTemplate.DefaultEmailOption))
 		}
 		if resp.UserPool.VerificationMessageTemplate.EmailMessage != nil {
 			f32.EmailMessage = resp.UserPool.VerificationMessageTemplate.EmailMessage
@@ -1025,329 +979,343 @@ func (rm *resourceManager) newCreateRequestPayload(
 	res := &svcsdk.CreateUserPoolInput{}
 
 	if r.ko.Spec.AccountRecoverySetting != nil {
-		f0 := &svcsdk.AccountRecoverySettingType{}
+		f0 := &svcsdktypes.AccountRecoverySettingType{}
 		if r.ko.Spec.AccountRecoverySetting.RecoveryMechanisms != nil {
-			f0f0 := []*svcsdk.RecoveryOptionType{}
+			f0f0 := []svcsdktypes.RecoveryOptionType{}
 			for _, f0f0iter := range r.ko.Spec.AccountRecoverySetting.RecoveryMechanisms {
-				f0f0elem := &svcsdk.RecoveryOptionType{}
+				f0f0elem := &svcsdktypes.RecoveryOptionType{}
 				if f0f0iter.Name != nil {
-					f0f0elem.SetName(*f0f0iter.Name)
+					f0f0elem.Name = svcsdktypes.RecoveryOptionNameType(*f0f0iter.Name)
 				}
 				if f0f0iter.Priority != nil {
-					f0f0elem.SetPriority(*f0f0iter.Priority)
+					priorityCopy0 := *f0f0iter.Priority
+					if priorityCopy0 > math.MaxInt32 || priorityCopy0 < math.MinInt32 {
+						return nil, fmt.Errorf("error: field Priority is of type int32")
+					}
+					priorityCopy := int32(priorityCopy0)
+					f0f0elem.Priority = &priorityCopy
 				}
-				f0f0 = append(f0f0, f0f0elem)
+				f0f0 = append(f0f0, *f0f0elem)
 			}
-			f0.SetRecoveryMechanisms(f0f0)
+			f0.RecoveryMechanisms = f0f0
 		}
-		res.SetAccountRecoverySetting(f0)
+		res.AccountRecoverySetting = f0
 	}
 	if r.ko.Spec.AdminCreateUserConfig != nil {
-		f1 := &svcsdk.AdminCreateUserConfigType{}
+		f1 := &svcsdktypes.AdminCreateUserConfigType{}
 		if r.ko.Spec.AdminCreateUserConfig.AllowAdminCreateUserOnly != nil {
-			f1.SetAllowAdminCreateUserOnly(*r.ko.Spec.AdminCreateUserConfig.AllowAdminCreateUserOnly)
+			f1.AllowAdminCreateUserOnly = *r.ko.Spec.AdminCreateUserConfig.AllowAdminCreateUserOnly
 		}
 		if r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate != nil {
-			f1f1 := &svcsdk.MessageTemplateType{}
+			f1f1 := &svcsdktypes.MessageTemplateType{}
 			if r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailMessage != nil {
-				f1f1.SetEmailMessage(*r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailMessage)
+				f1f1.EmailMessage = r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailMessage
 			}
 			if r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailSubject != nil {
-				f1f1.SetEmailSubject(*r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailSubject)
+				f1f1.EmailSubject = r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailSubject
 			}
 			if r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.SMSMessage != nil {
-				f1f1.SetSMSMessage(*r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.SMSMessage)
+				f1f1.SMSMessage = r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.SMSMessage
 			}
-			f1.SetInviteMessageTemplate(f1f1)
+			f1.InviteMessageTemplate = f1f1
 		}
 		if r.ko.Spec.AdminCreateUserConfig.UnusedAccountValidityDays != nil {
-			f1.SetUnusedAccountValidityDays(*r.ko.Spec.AdminCreateUserConfig.UnusedAccountValidityDays)
+			unusedAccountValidityDaysCopy0 := *r.ko.Spec.AdminCreateUserConfig.UnusedAccountValidityDays
+			if unusedAccountValidityDaysCopy0 > math.MaxInt32 || unusedAccountValidityDaysCopy0 < math.MinInt32 {
+				return nil, fmt.Errorf("error: field UnusedAccountValidityDays is of type int32")
+			}
+			unusedAccountValidityDaysCopy := int32(unusedAccountValidityDaysCopy0)
+			f1.UnusedAccountValidityDays = unusedAccountValidityDaysCopy
 		}
-		res.SetAdminCreateUserConfig(f1)
+		res.AdminCreateUserConfig = f1
 	}
 	if r.ko.Spec.AliasAttributes != nil {
-		f2 := []*string{}
+		f2 := []svcsdktypes.AliasAttributeType{}
 		for _, f2iter := range r.ko.Spec.AliasAttributes {
 			var f2elem string
-			f2elem = *f2iter
-			f2 = append(f2, &f2elem)
+			f2elem = string(*f2iter)
+			f2 = append(f2, svcsdktypes.AliasAttributeType(f2elem))
 		}
-		res.SetAliasAttributes(f2)
+		res.AliasAttributes = f2
 	}
 	if r.ko.Spec.AutoVerifiedAttributes != nil {
-		f3 := []*string{}
+		f3 := []svcsdktypes.VerifiedAttributeType{}
 		for _, f3iter := range r.ko.Spec.AutoVerifiedAttributes {
 			var f3elem string
-			f3elem = *f3iter
-			f3 = append(f3, &f3elem)
+			f3elem = string(*f3iter)
+			f3 = append(f3, svcsdktypes.VerifiedAttributeType(f3elem))
 		}
-		res.SetAutoVerifiedAttributes(f3)
+		res.AutoVerifiedAttributes = f3
 	}
 	if r.ko.Spec.DeletionProtection != nil {
-		res.SetDeletionProtection(*r.ko.Spec.DeletionProtection)
+		res.DeletionProtection = svcsdktypes.DeletionProtectionType(*r.ko.Spec.DeletionProtection)
 	}
 	if r.ko.Spec.DeviceConfiguration != nil {
-		f5 := &svcsdk.DeviceConfigurationType{}
+		f5 := &svcsdktypes.DeviceConfigurationType{}
 		if r.ko.Spec.DeviceConfiguration.ChallengeRequiredOnNewDevice != nil {
-			f5.SetChallengeRequiredOnNewDevice(*r.ko.Spec.DeviceConfiguration.ChallengeRequiredOnNewDevice)
+			f5.ChallengeRequiredOnNewDevice = *r.ko.Spec.DeviceConfiguration.ChallengeRequiredOnNewDevice
 		}
 		if r.ko.Spec.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt != nil {
-			f5.SetDeviceOnlyRememberedOnUserPrompt(*r.ko.Spec.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt)
+			f5.DeviceOnlyRememberedOnUserPrompt = *r.ko.Spec.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt
 		}
-		res.SetDeviceConfiguration(f5)
+		res.DeviceConfiguration = f5
 	}
 	if r.ko.Spec.EmailConfiguration != nil {
-		f6 := &svcsdk.EmailConfigurationType{}
+		f6 := &svcsdktypes.EmailConfigurationType{}
 		if r.ko.Spec.EmailConfiguration.ConfigurationSet != nil {
-			f6.SetConfigurationSet(*r.ko.Spec.EmailConfiguration.ConfigurationSet)
+			f6.ConfigurationSet = r.ko.Spec.EmailConfiguration.ConfigurationSet
 		}
 		if r.ko.Spec.EmailConfiguration.EmailSendingAccount != nil {
-			f6.SetEmailSendingAccount(*r.ko.Spec.EmailConfiguration.EmailSendingAccount)
+			f6.EmailSendingAccount = svcsdktypes.EmailSendingAccountType(*r.ko.Spec.EmailConfiguration.EmailSendingAccount)
 		}
 		if r.ko.Spec.EmailConfiguration.From != nil {
-			f6.SetFrom(*r.ko.Spec.EmailConfiguration.From)
+			f6.From = r.ko.Spec.EmailConfiguration.From
 		}
 		if r.ko.Spec.EmailConfiguration.ReplyToEmailAddress != nil {
-			f6.SetReplyToEmailAddress(*r.ko.Spec.EmailConfiguration.ReplyToEmailAddress)
+			f6.ReplyToEmailAddress = r.ko.Spec.EmailConfiguration.ReplyToEmailAddress
 		}
 		if r.ko.Spec.EmailConfiguration.SourceARN != nil {
-			f6.SetSourceArn(*r.ko.Spec.EmailConfiguration.SourceARN)
+			f6.SourceArn = r.ko.Spec.EmailConfiguration.SourceARN
 		}
-		res.SetEmailConfiguration(f6)
+		res.EmailConfiguration = f6
 	}
 	if r.ko.Spec.EmailVerificationMessage != nil {
-		res.SetEmailVerificationMessage(*r.ko.Spec.EmailVerificationMessage)
+		res.EmailVerificationMessage = r.ko.Spec.EmailVerificationMessage
 	}
 	if r.ko.Spec.EmailVerificationSubject != nil {
-		res.SetEmailVerificationSubject(*r.ko.Spec.EmailVerificationSubject)
+		res.EmailVerificationSubject = r.ko.Spec.EmailVerificationSubject
 	}
 	if r.ko.Spec.LambdaConfig != nil {
-		f9 := &svcsdk.LambdaConfigType{}
+		f9 := &svcsdktypes.LambdaConfigType{}
 		if r.ko.Spec.LambdaConfig.CreateAuthChallenge != nil {
-			f9.SetCreateAuthChallenge(*r.ko.Spec.LambdaConfig.CreateAuthChallenge)
+			f9.CreateAuthChallenge = r.ko.Spec.LambdaConfig.CreateAuthChallenge
 		}
 		if r.ko.Spec.LambdaConfig.CustomEmailSender != nil {
-			f9f1 := &svcsdk.CustomEmailLambdaVersionConfigType{}
+			f9f1 := &svcsdktypes.CustomEmailLambdaVersionConfigType{}
 			if r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaARN != nil {
-				f9f1.SetLambdaArn(*r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaARN)
+				f9f1.LambdaArn = r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaARN
 			}
 			if r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaVersion != nil {
-				f9f1.SetLambdaVersion(*r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaVersion)
+				f9f1.LambdaVersion = svcsdktypes.CustomEmailSenderLambdaVersionType(*r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaVersion)
 			}
-			f9.SetCustomEmailSender(f9f1)
+			f9.CustomEmailSender = f9f1
 		}
 		if r.ko.Spec.LambdaConfig.CustomMessage != nil {
-			f9.SetCustomMessage(*r.ko.Spec.LambdaConfig.CustomMessage)
+			f9.CustomMessage = r.ko.Spec.LambdaConfig.CustomMessage
 		}
 		if r.ko.Spec.LambdaConfig.CustomSMSSender != nil {
-			f9f3 := &svcsdk.CustomSMSLambdaVersionConfigType{}
+			f9f3 := &svcsdktypes.CustomSMSLambdaVersionConfigType{}
 			if r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaARN != nil {
-				f9f3.SetLambdaArn(*r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaARN)
+				f9f3.LambdaArn = r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaARN
 			}
 			if r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaVersion != nil {
-				f9f3.SetLambdaVersion(*r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaVersion)
+				f9f3.LambdaVersion = svcsdktypes.CustomSMSSenderLambdaVersionType(*r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaVersion)
 			}
-			f9.SetCustomSMSSender(f9f3)
+			f9.CustomSMSSender = f9f3
 		}
 		if r.ko.Spec.LambdaConfig.DefineAuthChallenge != nil {
-			f9.SetDefineAuthChallenge(*r.ko.Spec.LambdaConfig.DefineAuthChallenge)
+			f9.DefineAuthChallenge = r.ko.Spec.LambdaConfig.DefineAuthChallenge
 		}
 		if r.ko.Spec.LambdaConfig.KMSKeyID != nil {
-			f9.SetKMSKeyID(*r.ko.Spec.LambdaConfig.KMSKeyID)
+			f9.KMSKeyID = r.ko.Spec.LambdaConfig.KMSKeyID
 		}
 		if r.ko.Spec.LambdaConfig.PostAuthentication != nil {
-			f9.SetPostAuthentication(*r.ko.Spec.LambdaConfig.PostAuthentication)
+			f9.PostAuthentication = r.ko.Spec.LambdaConfig.PostAuthentication
 		}
 		if r.ko.Spec.LambdaConfig.PostConfirmation != nil {
-			f9.SetPostConfirmation(*r.ko.Spec.LambdaConfig.PostConfirmation)
+			f9.PostConfirmation = r.ko.Spec.LambdaConfig.PostConfirmation
 		}
 		if r.ko.Spec.LambdaConfig.PreAuthentication != nil {
-			f9.SetPreAuthentication(*r.ko.Spec.LambdaConfig.PreAuthentication)
+			f9.PreAuthentication = r.ko.Spec.LambdaConfig.PreAuthentication
 		}
 		if r.ko.Spec.LambdaConfig.PreSignUp != nil {
-			f9.SetPreSignUp(*r.ko.Spec.LambdaConfig.PreSignUp)
+			f9.PreSignUp = r.ko.Spec.LambdaConfig.PreSignUp
 		}
 		if r.ko.Spec.LambdaConfig.PreTokenGeneration != nil {
-			f9.SetPreTokenGeneration(*r.ko.Spec.LambdaConfig.PreTokenGeneration)
+			f9.PreTokenGeneration = r.ko.Spec.LambdaConfig.PreTokenGeneration
 		}
 		if r.ko.Spec.LambdaConfig.PreTokenGenerationConfig != nil {
-			f9f11 := &svcsdk.PreTokenGenerationVersionConfigType{}
+			f9f11 := &svcsdktypes.PreTokenGenerationVersionConfigType{}
 			if r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaARN != nil {
-				f9f11.SetLambdaArn(*r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaARN)
+				f9f11.LambdaArn = r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaARN
 			}
 			if r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaVersion != nil {
-				f9f11.SetLambdaVersion(*r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaVersion)
+				f9f11.LambdaVersion = svcsdktypes.PreTokenGenerationLambdaVersionType(*r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaVersion)
 			}
-			f9.SetPreTokenGenerationConfig(f9f11)
+			f9.PreTokenGenerationConfig = f9f11
 		}
 		if r.ko.Spec.LambdaConfig.UserMigration != nil {
-			f9.SetUserMigration(*r.ko.Spec.LambdaConfig.UserMigration)
+			f9.UserMigration = r.ko.Spec.LambdaConfig.UserMigration
 		}
 		if r.ko.Spec.LambdaConfig.VerifyAuthChallengeResponse != nil {
-			f9.SetVerifyAuthChallengeResponse(*r.ko.Spec.LambdaConfig.VerifyAuthChallengeResponse)
+			f9.VerifyAuthChallengeResponse = r.ko.Spec.LambdaConfig.VerifyAuthChallengeResponse
 		}
-		res.SetLambdaConfig(f9)
+		res.LambdaConfig = f9
 	}
 	if r.ko.Spec.MFAConfiguration != nil {
-		res.SetMfaConfiguration(*r.ko.Spec.MFAConfiguration)
+		res.MfaConfiguration = svcsdktypes.UserPoolMfaType(*r.ko.Spec.MFAConfiguration)
 	}
 	if r.ko.Spec.Policies != nil {
-		f11 := &svcsdk.UserPoolPolicyType{}
+		f11 := &svcsdktypes.UserPoolPolicyType{}
 		if r.ko.Spec.Policies.PasswordPolicy != nil {
-			f11f0 := &svcsdk.PasswordPolicyType{}
+			f11f0 := &svcsdktypes.PasswordPolicyType{}
 			if r.ko.Spec.Policies.PasswordPolicy.MinimumLength != nil {
-				f11f0.SetMinimumLength(*r.ko.Spec.Policies.PasswordPolicy.MinimumLength)
+				minimumLengthCopy0 := *r.ko.Spec.Policies.PasswordPolicy.MinimumLength
+				if minimumLengthCopy0 > math.MaxInt32 || minimumLengthCopy0 < math.MinInt32 {
+					return nil, fmt.Errorf("error: field MinimumLength is of type int32")
+				}
+				minimumLengthCopy := int32(minimumLengthCopy0)
+				f11f0.MinimumLength = &minimumLengthCopy
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.RequireLowercase != nil {
-				f11f0.SetRequireLowercase(*r.ko.Spec.Policies.PasswordPolicy.RequireLowercase)
+				f11f0.RequireLowercase = *r.ko.Spec.Policies.PasswordPolicy.RequireLowercase
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.RequireNumbers != nil {
-				f11f0.SetRequireNumbers(*r.ko.Spec.Policies.PasswordPolicy.RequireNumbers)
+				f11f0.RequireNumbers = *r.ko.Spec.Policies.PasswordPolicy.RequireNumbers
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.RequireSymbols != nil {
-				f11f0.SetRequireSymbols(*r.ko.Spec.Policies.PasswordPolicy.RequireSymbols)
+				f11f0.RequireSymbols = *r.ko.Spec.Policies.PasswordPolicy.RequireSymbols
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.RequireUppercase != nil {
-				f11f0.SetRequireUppercase(*r.ko.Spec.Policies.PasswordPolicy.RequireUppercase)
+				f11f0.RequireUppercase = *r.ko.Spec.Policies.PasswordPolicy.RequireUppercase
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.TemporaryPasswordValidityDays != nil {
-				f11f0.SetTemporaryPasswordValidityDays(*r.ko.Spec.Policies.PasswordPolicy.TemporaryPasswordValidityDays)
+				temporaryPasswordValidityDaysCopy0 := *r.ko.Spec.Policies.PasswordPolicy.TemporaryPasswordValidityDays
+				if temporaryPasswordValidityDaysCopy0 > math.MaxInt32 || temporaryPasswordValidityDaysCopy0 < math.MinInt32 {
+					return nil, fmt.Errorf("error: field TemporaryPasswordValidityDays is of type int32")
+				}
+				temporaryPasswordValidityDaysCopy := int32(temporaryPasswordValidityDaysCopy0)
+				f11f0.TemporaryPasswordValidityDays = temporaryPasswordValidityDaysCopy
 			}
-			f11.SetPasswordPolicy(f11f0)
+			f11.PasswordPolicy = f11f0
 		}
-		res.SetPolicies(f11)
+		res.Policies = f11
 	}
 	if r.ko.Spec.Name != nil {
-		res.SetPoolName(*r.ko.Spec.Name)
+		res.PoolName = r.ko.Spec.Name
 	}
 	if r.ko.Spec.Schema != nil {
-		f13 := []*svcsdk.SchemaAttributeType{}
+		f13 := []svcsdktypes.SchemaAttributeType{}
 		for _, f13iter := range r.ko.Spec.Schema {
-			f13elem := &svcsdk.SchemaAttributeType{}
+			f13elem := &svcsdktypes.SchemaAttributeType{}
 			if f13iter.AttributeDataType != nil {
-				f13elem.SetAttributeDataType(*f13iter.AttributeDataType)
+				f13elem.AttributeDataType = svcsdktypes.AttributeDataType(*f13iter.AttributeDataType)
 			}
 			if f13iter.DeveloperOnlyAttribute != nil {
-				f13elem.SetDeveloperOnlyAttribute(*f13iter.DeveloperOnlyAttribute)
+				f13elem.DeveloperOnlyAttribute = f13iter.DeveloperOnlyAttribute
 			}
 			if f13iter.Mutable != nil {
-				f13elem.SetMutable(*f13iter.Mutable)
+				f13elem.Mutable = f13iter.Mutable
 			}
 			if f13iter.Name != nil {
-				f13elem.SetName(*f13iter.Name)
+				f13elem.Name = f13iter.Name
 			}
 			if f13iter.NumberAttributeConstraints != nil {
-				f13elemf4 := &svcsdk.NumberAttributeConstraintsType{}
+				f13elemf4 := &svcsdktypes.NumberAttributeConstraintsType{}
 				if f13iter.NumberAttributeConstraints.MaxValue != nil {
-					f13elemf4.SetMaxValue(*f13iter.NumberAttributeConstraints.MaxValue)
+					f13elemf4.MaxValue = f13iter.NumberAttributeConstraints.MaxValue
 				}
 				if f13iter.NumberAttributeConstraints.MinValue != nil {
-					f13elemf4.SetMinValue(*f13iter.NumberAttributeConstraints.MinValue)
+					f13elemf4.MinValue = f13iter.NumberAttributeConstraints.MinValue
 				}
-				f13elem.SetNumberAttributeConstraints(f13elemf4)
+				f13elem.NumberAttributeConstraints = f13elemf4
 			}
 			if f13iter.Required != nil {
-				f13elem.SetRequired(*f13iter.Required)
+				f13elem.Required = f13iter.Required
 			}
 			if f13iter.StringAttributeConstraints != nil {
-				f13elemf6 := &svcsdk.StringAttributeConstraintsType{}
+				f13elemf6 := &svcsdktypes.StringAttributeConstraintsType{}
 				if f13iter.StringAttributeConstraints.MaxLength != nil {
-					f13elemf6.SetMaxLength(*f13iter.StringAttributeConstraints.MaxLength)
+					f13elemf6.MaxLength = f13iter.StringAttributeConstraints.MaxLength
 				}
 				if f13iter.StringAttributeConstraints.MinLength != nil {
-					f13elemf6.SetMinLength(*f13iter.StringAttributeConstraints.MinLength)
+					f13elemf6.MinLength = f13iter.StringAttributeConstraints.MinLength
 				}
-				f13elem.SetStringAttributeConstraints(f13elemf6)
+				f13elem.StringAttributeConstraints = f13elemf6
 			}
-			f13 = append(f13, f13elem)
+			f13 = append(f13, *f13elem)
 		}
-		res.SetSchema(f13)
+		res.Schema = f13
 	}
 	if r.ko.Spec.SmsAuthenticationMessage != nil {
-		res.SetSmsAuthenticationMessage(*r.ko.Spec.SmsAuthenticationMessage)
+		res.SmsAuthenticationMessage = r.ko.Spec.SmsAuthenticationMessage
 	}
 	if r.ko.Spec.SmsConfiguration != nil {
-		f15 := &svcsdk.SmsConfigurationType{}
+		f15 := &svcsdktypes.SmsConfigurationType{}
 		if r.ko.Spec.SmsConfiguration.ExternalID != nil {
-			f15.SetExternalId(*r.ko.Spec.SmsConfiguration.ExternalID)
+			f15.ExternalId = r.ko.Spec.SmsConfiguration.ExternalID
 		}
 		if r.ko.Spec.SmsConfiguration.SNSCallerARN != nil {
-			f15.SetSnsCallerArn(*r.ko.Spec.SmsConfiguration.SNSCallerARN)
+			f15.SnsCallerArn = r.ko.Spec.SmsConfiguration.SNSCallerARN
 		}
 		if r.ko.Spec.SmsConfiguration.SNSRegion != nil {
-			f15.SetSnsRegion(*r.ko.Spec.SmsConfiguration.SNSRegion)
+			f15.SnsRegion = r.ko.Spec.SmsConfiguration.SNSRegion
 		}
-		res.SetSmsConfiguration(f15)
+		res.SmsConfiguration = f15
 	}
 	if r.ko.Spec.SmsVerificationMessage != nil {
-		res.SetSmsVerificationMessage(*r.ko.Spec.SmsVerificationMessage)
+		res.SmsVerificationMessage = r.ko.Spec.SmsVerificationMessage
 	}
 	if r.ko.Spec.UserAttributeUpdateSettings != nil {
-		f17 := &svcsdk.UserAttributeUpdateSettingsType{}
+		f17 := &svcsdktypes.UserAttributeUpdateSettingsType{}
 		if r.ko.Spec.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate != nil {
-			f17f0 := []*string{}
+			f17f0 := []svcsdktypes.VerifiedAttributeType{}
 			for _, f17f0iter := range r.ko.Spec.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate {
 				var f17f0elem string
-				f17f0elem = *f17f0iter
-				f17f0 = append(f17f0, &f17f0elem)
+				f17f0elem = string(*f17f0iter)
+				f17f0 = append(f17f0, svcsdktypes.VerifiedAttributeType(f17f0elem))
 			}
-			f17.SetAttributesRequireVerificationBeforeUpdate(f17f0)
+			f17.AttributesRequireVerificationBeforeUpdate = f17f0
 		}
-		res.SetUserAttributeUpdateSettings(f17)
+		res.UserAttributeUpdateSettings = f17
 	}
 	if r.ko.Spec.UserPoolAddOns != nil {
-		f18 := &svcsdk.UserPoolAddOnsType{}
+		f18 := &svcsdktypes.UserPoolAddOnsType{}
 		if r.ko.Spec.UserPoolAddOns.AdvancedSecurityMode != nil {
-			f18.SetAdvancedSecurityMode(*r.ko.Spec.UserPoolAddOns.AdvancedSecurityMode)
+			f18.AdvancedSecurityMode = svcsdktypes.AdvancedSecurityModeType(*r.ko.Spec.UserPoolAddOns.AdvancedSecurityMode)
 		}
-		res.SetUserPoolAddOns(f18)
+		res.UserPoolAddOns = f18
 	}
 	if r.ko.Spec.UserPoolTags != nil {
-		f19 := map[string]*string{}
-		for f19key, f19valiter := range r.ko.Spec.UserPoolTags {
-			var f19val string
-			f19val = *f19valiter
-			f19[f19key] = &f19val
-		}
-		res.SetUserPoolTags(f19)
+		res.UserPoolTags = aws.ToStringMap(r.ko.Spec.UserPoolTags)
 	}
 	if r.ko.Spec.UsernameAttributes != nil {
-		f20 := []*string{}
+		f20 := []svcsdktypes.UsernameAttributeType{}
 		for _, f20iter := range r.ko.Spec.UsernameAttributes {
 			var f20elem string
-			f20elem = *f20iter
-			f20 = append(f20, &f20elem)
+			f20elem = string(*f20iter)
+			f20 = append(f20, svcsdktypes.UsernameAttributeType(f20elem))
 		}
-		res.SetUsernameAttributes(f20)
+		res.UsernameAttributes = f20
 	}
 	if r.ko.Spec.UsernameConfiguration != nil {
-		f21 := &svcsdk.UsernameConfigurationType{}
+		f21 := &svcsdktypes.UsernameConfigurationType{}
 		if r.ko.Spec.UsernameConfiguration.CaseSensitive != nil {
-			f21.SetCaseSensitive(*r.ko.Spec.UsernameConfiguration.CaseSensitive)
+			f21.CaseSensitive = r.ko.Spec.UsernameConfiguration.CaseSensitive
 		}
-		res.SetUsernameConfiguration(f21)
+		res.UsernameConfiguration = f21
 	}
 	if r.ko.Spec.VerificationMessageTemplate != nil {
-		f22 := &svcsdk.VerificationMessageTemplateType{}
+		f22 := &svcsdktypes.VerificationMessageTemplateType{}
 		if r.ko.Spec.VerificationMessageTemplate.DefaultEmailOption != nil {
-			f22.SetDefaultEmailOption(*r.ko.Spec.VerificationMessageTemplate.DefaultEmailOption)
+			f22.DefaultEmailOption = svcsdktypes.DefaultEmailOptionType(*r.ko.Spec.VerificationMessageTemplate.DefaultEmailOption)
 		}
 		if r.ko.Spec.VerificationMessageTemplate.EmailMessage != nil {
-			f22.SetEmailMessage(*r.ko.Spec.VerificationMessageTemplate.EmailMessage)
+			f22.EmailMessage = r.ko.Spec.VerificationMessageTemplate.EmailMessage
 		}
 		if r.ko.Spec.VerificationMessageTemplate.EmailMessageByLink != nil {
-			f22.SetEmailMessageByLink(*r.ko.Spec.VerificationMessageTemplate.EmailMessageByLink)
+			f22.EmailMessageByLink = r.ko.Spec.VerificationMessageTemplate.EmailMessageByLink
 		}
 		if r.ko.Spec.VerificationMessageTemplate.EmailSubject != nil {
-			f22.SetEmailSubject(*r.ko.Spec.VerificationMessageTemplate.EmailSubject)
+			f22.EmailSubject = r.ko.Spec.VerificationMessageTemplate.EmailSubject
 		}
 		if r.ko.Spec.VerificationMessageTemplate.EmailSubjectByLink != nil {
-			f22.SetEmailSubjectByLink(*r.ko.Spec.VerificationMessageTemplate.EmailSubjectByLink)
+			f22.EmailSubjectByLink = r.ko.Spec.VerificationMessageTemplate.EmailSubjectByLink
 		}
 		if r.ko.Spec.VerificationMessageTemplate.SmsMessage != nil {
-			f22.SetSmsMessage(*r.ko.Spec.VerificationMessageTemplate.SmsMessage)
+			f22.SmsMessage = r.ko.Spec.VerificationMessageTemplate.SmsMessage
 		}
-		res.SetVerificationMessageTemplate(f22)
+		res.VerificationMessageTemplate = f22
 	}
 
 	return res, nil
@@ -1387,7 +1355,7 @@ func (rm *resourceManager) sdkUpdate(
 
 	var resp *svcsdk.UpdateUserPoolOutput
 	_ = resp
-	resp, err = rm.sdkapi.UpdateUserPoolWithContext(ctx, input)
+	resp, err = rm.sdkapi.UpdateUserPool(ctx, input)
 	rm.metrics.RecordAPICall("UPDATE", "UpdateUserPool", err)
 	if err != nil {
 		return nil, err
@@ -1410,261 +1378,275 @@ func (rm *resourceManager) newUpdateRequestPayload(
 	res := &svcsdk.UpdateUserPoolInput{}
 
 	if r.ko.Spec.AccountRecoverySetting != nil {
-		f0 := &svcsdk.AccountRecoverySettingType{}
+		f0 := &svcsdktypes.AccountRecoverySettingType{}
 		if r.ko.Spec.AccountRecoverySetting.RecoveryMechanisms != nil {
-			f0f0 := []*svcsdk.RecoveryOptionType{}
+			f0f0 := []svcsdktypes.RecoveryOptionType{}
 			for _, f0f0iter := range r.ko.Spec.AccountRecoverySetting.RecoveryMechanisms {
-				f0f0elem := &svcsdk.RecoveryOptionType{}
+				f0f0elem := &svcsdktypes.RecoveryOptionType{}
 				if f0f0iter.Name != nil {
-					f0f0elem.SetName(*f0f0iter.Name)
+					f0f0elem.Name = svcsdktypes.RecoveryOptionNameType(*f0f0iter.Name)
 				}
 				if f0f0iter.Priority != nil {
-					f0f0elem.SetPriority(*f0f0iter.Priority)
+					priorityCopy0 := *f0f0iter.Priority
+					if priorityCopy0 > math.MaxInt32 || priorityCopy0 < math.MinInt32 {
+						return nil, fmt.Errorf("error: field Priority is of type int32")
+					}
+					priorityCopy := int32(priorityCopy0)
+					f0f0elem.Priority = &priorityCopy
 				}
-				f0f0 = append(f0f0, f0f0elem)
+				f0f0 = append(f0f0, *f0f0elem)
 			}
-			f0.SetRecoveryMechanisms(f0f0)
+			f0.RecoveryMechanisms = f0f0
 		}
-		res.SetAccountRecoverySetting(f0)
+		res.AccountRecoverySetting = f0
 	}
 	if r.ko.Spec.AdminCreateUserConfig != nil {
-		f1 := &svcsdk.AdminCreateUserConfigType{}
+		f1 := &svcsdktypes.AdminCreateUserConfigType{}
 		if r.ko.Spec.AdminCreateUserConfig.AllowAdminCreateUserOnly != nil {
-			f1.SetAllowAdminCreateUserOnly(*r.ko.Spec.AdminCreateUserConfig.AllowAdminCreateUserOnly)
+			f1.AllowAdminCreateUserOnly = *r.ko.Spec.AdminCreateUserConfig.AllowAdminCreateUserOnly
 		}
 		if r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate != nil {
-			f1f1 := &svcsdk.MessageTemplateType{}
+			f1f1 := &svcsdktypes.MessageTemplateType{}
 			if r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailMessage != nil {
-				f1f1.SetEmailMessage(*r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailMessage)
+				f1f1.EmailMessage = r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailMessage
 			}
 			if r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailSubject != nil {
-				f1f1.SetEmailSubject(*r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailSubject)
+				f1f1.EmailSubject = r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.EmailSubject
 			}
 			if r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.SMSMessage != nil {
-				f1f1.SetSMSMessage(*r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.SMSMessage)
+				f1f1.SMSMessage = r.ko.Spec.AdminCreateUserConfig.InviteMessageTemplate.SMSMessage
 			}
-			f1.SetInviteMessageTemplate(f1f1)
+			f1.InviteMessageTemplate = f1f1
 		}
 		if r.ko.Spec.AdminCreateUserConfig.UnusedAccountValidityDays != nil {
-			f1.SetUnusedAccountValidityDays(*r.ko.Spec.AdminCreateUserConfig.UnusedAccountValidityDays)
+			unusedAccountValidityDaysCopy0 := *r.ko.Spec.AdminCreateUserConfig.UnusedAccountValidityDays
+			if unusedAccountValidityDaysCopy0 > math.MaxInt32 || unusedAccountValidityDaysCopy0 < math.MinInt32 {
+				return nil, fmt.Errorf("error: field UnusedAccountValidityDays is of type int32")
+			}
+			unusedAccountValidityDaysCopy := int32(unusedAccountValidityDaysCopy0)
+			f1.UnusedAccountValidityDays = unusedAccountValidityDaysCopy
 		}
-		res.SetAdminCreateUserConfig(f1)
+		res.AdminCreateUserConfig = f1
 	}
 	if r.ko.Spec.AutoVerifiedAttributes != nil {
-		f2 := []*string{}
+		f2 := []svcsdktypes.VerifiedAttributeType{}
 		for _, f2iter := range r.ko.Spec.AutoVerifiedAttributes {
 			var f2elem string
-			f2elem = *f2iter
-			f2 = append(f2, &f2elem)
+			f2elem = string(*f2iter)
+			f2 = append(f2, svcsdktypes.VerifiedAttributeType(f2elem))
 		}
-		res.SetAutoVerifiedAttributes(f2)
+		res.AutoVerifiedAttributes = f2
 	}
 	if r.ko.Spec.DeletionProtection != nil {
-		res.SetDeletionProtection(*r.ko.Spec.DeletionProtection)
+		res.DeletionProtection = svcsdktypes.DeletionProtectionType(*r.ko.Spec.DeletionProtection)
 	}
 	if r.ko.Spec.DeviceConfiguration != nil {
-		f4 := &svcsdk.DeviceConfigurationType{}
+		f4 := &svcsdktypes.DeviceConfigurationType{}
 		if r.ko.Spec.DeviceConfiguration.ChallengeRequiredOnNewDevice != nil {
-			f4.SetChallengeRequiredOnNewDevice(*r.ko.Spec.DeviceConfiguration.ChallengeRequiredOnNewDevice)
+			f4.ChallengeRequiredOnNewDevice = *r.ko.Spec.DeviceConfiguration.ChallengeRequiredOnNewDevice
 		}
 		if r.ko.Spec.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt != nil {
-			f4.SetDeviceOnlyRememberedOnUserPrompt(*r.ko.Spec.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt)
+			f4.DeviceOnlyRememberedOnUserPrompt = *r.ko.Spec.DeviceConfiguration.DeviceOnlyRememberedOnUserPrompt
 		}
-		res.SetDeviceConfiguration(f4)
+		res.DeviceConfiguration = f4
 	}
 	if r.ko.Spec.EmailConfiguration != nil {
-		f5 := &svcsdk.EmailConfigurationType{}
+		f5 := &svcsdktypes.EmailConfigurationType{}
 		if r.ko.Spec.EmailConfiguration.ConfigurationSet != nil {
-			f5.SetConfigurationSet(*r.ko.Spec.EmailConfiguration.ConfigurationSet)
+			f5.ConfigurationSet = r.ko.Spec.EmailConfiguration.ConfigurationSet
 		}
 		if r.ko.Spec.EmailConfiguration.EmailSendingAccount != nil {
-			f5.SetEmailSendingAccount(*r.ko.Spec.EmailConfiguration.EmailSendingAccount)
+			f5.EmailSendingAccount = svcsdktypes.EmailSendingAccountType(*r.ko.Spec.EmailConfiguration.EmailSendingAccount)
 		}
 		if r.ko.Spec.EmailConfiguration.From != nil {
-			f5.SetFrom(*r.ko.Spec.EmailConfiguration.From)
+			f5.From = r.ko.Spec.EmailConfiguration.From
 		}
 		if r.ko.Spec.EmailConfiguration.ReplyToEmailAddress != nil {
-			f5.SetReplyToEmailAddress(*r.ko.Spec.EmailConfiguration.ReplyToEmailAddress)
+			f5.ReplyToEmailAddress = r.ko.Spec.EmailConfiguration.ReplyToEmailAddress
 		}
 		if r.ko.Spec.EmailConfiguration.SourceARN != nil {
-			f5.SetSourceArn(*r.ko.Spec.EmailConfiguration.SourceARN)
+			f5.SourceArn = r.ko.Spec.EmailConfiguration.SourceARN
 		}
-		res.SetEmailConfiguration(f5)
+		res.EmailConfiguration = f5
 	}
 	if r.ko.Spec.EmailVerificationMessage != nil {
-		res.SetEmailVerificationMessage(*r.ko.Spec.EmailVerificationMessage)
+		res.EmailVerificationMessage = r.ko.Spec.EmailVerificationMessage
 	}
 	if r.ko.Spec.EmailVerificationSubject != nil {
-		res.SetEmailVerificationSubject(*r.ko.Spec.EmailVerificationSubject)
+		res.EmailVerificationSubject = r.ko.Spec.EmailVerificationSubject
 	}
 	if r.ko.Spec.LambdaConfig != nil {
-		f8 := &svcsdk.LambdaConfigType{}
+		f8 := &svcsdktypes.LambdaConfigType{}
 		if r.ko.Spec.LambdaConfig.CreateAuthChallenge != nil {
-			f8.SetCreateAuthChallenge(*r.ko.Spec.LambdaConfig.CreateAuthChallenge)
+			f8.CreateAuthChallenge = r.ko.Spec.LambdaConfig.CreateAuthChallenge
 		}
 		if r.ko.Spec.LambdaConfig.CustomEmailSender != nil {
-			f8f1 := &svcsdk.CustomEmailLambdaVersionConfigType{}
+			f8f1 := &svcsdktypes.CustomEmailLambdaVersionConfigType{}
 			if r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaARN != nil {
-				f8f1.SetLambdaArn(*r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaARN)
+				f8f1.LambdaArn = r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaARN
 			}
 			if r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaVersion != nil {
-				f8f1.SetLambdaVersion(*r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaVersion)
+				f8f1.LambdaVersion = svcsdktypes.CustomEmailSenderLambdaVersionType(*r.ko.Spec.LambdaConfig.CustomEmailSender.LambdaVersion)
 			}
-			f8.SetCustomEmailSender(f8f1)
+			f8.CustomEmailSender = f8f1
 		}
 		if r.ko.Spec.LambdaConfig.CustomMessage != nil {
-			f8.SetCustomMessage(*r.ko.Spec.LambdaConfig.CustomMessage)
+			f8.CustomMessage = r.ko.Spec.LambdaConfig.CustomMessage
 		}
 		if r.ko.Spec.LambdaConfig.CustomSMSSender != nil {
-			f8f3 := &svcsdk.CustomSMSLambdaVersionConfigType{}
+			f8f3 := &svcsdktypes.CustomSMSLambdaVersionConfigType{}
 			if r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaARN != nil {
-				f8f3.SetLambdaArn(*r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaARN)
+				f8f3.LambdaArn = r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaARN
 			}
 			if r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaVersion != nil {
-				f8f3.SetLambdaVersion(*r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaVersion)
+				f8f3.LambdaVersion = svcsdktypes.CustomSMSSenderLambdaVersionType(*r.ko.Spec.LambdaConfig.CustomSMSSender.LambdaVersion)
 			}
-			f8.SetCustomSMSSender(f8f3)
+			f8.CustomSMSSender = f8f3
 		}
 		if r.ko.Spec.LambdaConfig.DefineAuthChallenge != nil {
-			f8.SetDefineAuthChallenge(*r.ko.Spec.LambdaConfig.DefineAuthChallenge)
+			f8.DefineAuthChallenge = r.ko.Spec.LambdaConfig.DefineAuthChallenge
 		}
 		if r.ko.Spec.LambdaConfig.KMSKeyID != nil {
-			f8.SetKMSKeyID(*r.ko.Spec.LambdaConfig.KMSKeyID)
+			f8.KMSKeyID = r.ko.Spec.LambdaConfig.KMSKeyID
 		}
 		if r.ko.Spec.LambdaConfig.PostAuthentication != nil {
-			f8.SetPostAuthentication(*r.ko.Spec.LambdaConfig.PostAuthentication)
+			f8.PostAuthentication = r.ko.Spec.LambdaConfig.PostAuthentication
 		}
 		if r.ko.Spec.LambdaConfig.PostConfirmation != nil {
-			f8.SetPostConfirmation(*r.ko.Spec.LambdaConfig.PostConfirmation)
+			f8.PostConfirmation = r.ko.Spec.LambdaConfig.PostConfirmation
 		}
 		if r.ko.Spec.LambdaConfig.PreAuthentication != nil {
-			f8.SetPreAuthentication(*r.ko.Spec.LambdaConfig.PreAuthentication)
+			f8.PreAuthentication = r.ko.Spec.LambdaConfig.PreAuthentication
 		}
 		if r.ko.Spec.LambdaConfig.PreSignUp != nil {
-			f8.SetPreSignUp(*r.ko.Spec.LambdaConfig.PreSignUp)
+			f8.PreSignUp = r.ko.Spec.LambdaConfig.PreSignUp
 		}
 		if r.ko.Spec.LambdaConfig.PreTokenGeneration != nil {
-			f8.SetPreTokenGeneration(*r.ko.Spec.LambdaConfig.PreTokenGeneration)
+			f8.PreTokenGeneration = r.ko.Spec.LambdaConfig.PreTokenGeneration
 		}
 		if r.ko.Spec.LambdaConfig.PreTokenGenerationConfig != nil {
-			f8f11 := &svcsdk.PreTokenGenerationVersionConfigType{}
+			f8f11 := &svcsdktypes.PreTokenGenerationVersionConfigType{}
 			if r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaARN != nil {
-				f8f11.SetLambdaArn(*r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaARN)
+				f8f11.LambdaArn = r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaARN
 			}
 			if r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaVersion != nil {
-				f8f11.SetLambdaVersion(*r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaVersion)
+				f8f11.LambdaVersion = svcsdktypes.PreTokenGenerationLambdaVersionType(*r.ko.Spec.LambdaConfig.PreTokenGenerationConfig.LambdaVersion)
 			}
-			f8.SetPreTokenGenerationConfig(f8f11)
+			f8.PreTokenGenerationConfig = f8f11
 		}
 		if r.ko.Spec.LambdaConfig.UserMigration != nil {
-			f8.SetUserMigration(*r.ko.Spec.LambdaConfig.UserMigration)
+			f8.UserMigration = r.ko.Spec.LambdaConfig.UserMigration
 		}
 		if r.ko.Spec.LambdaConfig.VerifyAuthChallengeResponse != nil {
-			f8.SetVerifyAuthChallengeResponse(*r.ko.Spec.LambdaConfig.VerifyAuthChallengeResponse)
+			f8.VerifyAuthChallengeResponse = r.ko.Spec.LambdaConfig.VerifyAuthChallengeResponse
 		}
-		res.SetLambdaConfig(f8)
+		res.LambdaConfig = f8
 	}
 	if r.ko.Spec.MFAConfiguration != nil {
-		res.SetMfaConfiguration(*r.ko.Spec.MFAConfiguration)
+		res.MfaConfiguration = svcsdktypes.UserPoolMfaType(*r.ko.Spec.MFAConfiguration)
 	}
 	if r.ko.Spec.Policies != nil {
-		f10 := &svcsdk.UserPoolPolicyType{}
+		f10 := &svcsdktypes.UserPoolPolicyType{}
 		if r.ko.Spec.Policies.PasswordPolicy != nil {
-			f10f0 := &svcsdk.PasswordPolicyType{}
+			f10f0 := &svcsdktypes.PasswordPolicyType{}
 			if r.ko.Spec.Policies.PasswordPolicy.MinimumLength != nil {
-				f10f0.SetMinimumLength(*r.ko.Spec.Policies.PasswordPolicy.MinimumLength)
+				minimumLengthCopy0 := *r.ko.Spec.Policies.PasswordPolicy.MinimumLength
+				if minimumLengthCopy0 > math.MaxInt32 || minimumLengthCopy0 < math.MinInt32 {
+					return nil, fmt.Errorf("error: field MinimumLength is of type int32")
+				}
+				minimumLengthCopy := int32(minimumLengthCopy0)
+				f10f0.MinimumLength = &minimumLengthCopy
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.RequireLowercase != nil {
-				f10f0.SetRequireLowercase(*r.ko.Spec.Policies.PasswordPolicy.RequireLowercase)
+				f10f0.RequireLowercase = *r.ko.Spec.Policies.PasswordPolicy.RequireLowercase
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.RequireNumbers != nil {
-				f10f0.SetRequireNumbers(*r.ko.Spec.Policies.PasswordPolicy.RequireNumbers)
+				f10f0.RequireNumbers = *r.ko.Spec.Policies.PasswordPolicy.RequireNumbers
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.RequireSymbols != nil {
-				f10f0.SetRequireSymbols(*r.ko.Spec.Policies.PasswordPolicy.RequireSymbols)
+				f10f0.RequireSymbols = *r.ko.Spec.Policies.PasswordPolicy.RequireSymbols
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.RequireUppercase != nil {
-				f10f0.SetRequireUppercase(*r.ko.Spec.Policies.PasswordPolicy.RequireUppercase)
+				f10f0.RequireUppercase = *r.ko.Spec.Policies.PasswordPolicy.RequireUppercase
 			}
 			if r.ko.Spec.Policies.PasswordPolicy.TemporaryPasswordValidityDays != nil {
-				f10f0.SetTemporaryPasswordValidityDays(*r.ko.Spec.Policies.PasswordPolicy.TemporaryPasswordValidityDays)
+				temporaryPasswordValidityDaysCopy0 := *r.ko.Spec.Policies.PasswordPolicy.TemporaryPasswordValidityDays
+				if temporaryPasswordValidityDaysCopy0 > math.MaxInt32 || temporaryPasswordValidityDaysCopy0 < math.MinInt32 {
+					return nil, fmt.Errorf("error: field TemporaryPasswordValidityDays is of type int32")
+				}
+				temporaryPasswordValidityDaysCopy := int32(temporaryPasswordValidityDaysCopy0)
+				f10f0.TemporaryPasswordValidityDays = temporaryPasswordValidityDaysCopy
 			}
-			f10.SetPasswordPolicy(f10f0)
+			f10.PasswordPolicy = f10f0
 		}
-		res.SetPolicies(f10)
+		res.Policies = f10
 	}
 	if r.ko.Spec.SmsAuthenticationMessage != nil {
-		res.SetSmsAuthenticationMessage(*r.ko.Spec.SmsAuthenticationMessage)
+		res.SmsAuthenticationMessage = r.ko.Spec.SmsAuthenticationMessage
 	}
 	if r.ko.Spec.SmsConfiguration != nil {
-		f12 := &svcsdk.SmsConfigurationType{}
+		f13 := &svcsdktypes.SmsConfigurationType{}
 		if r.ko.Spec.SmsConfiguration.ExternalID != nil {
-			f12.SetExternalId(*r.ko.Spec.SmsConfiguration.ExternalID)
+			f13.ExternalId = r.ko.Spec.SmsConfiguration.ExternalID
 		}
 		if r.ko.Spec.SmsConfiguration.SNSCallerARN != nil {
-			f12.SetSnsCallerArn(*r.ko.Spec.SmsConfiguration.SNSCallerARN)
+			f13.SnsCallerArn = r.ko.Spec.SmsConfiguration.SNSCallerARN
 		}
 		if r.ko.Spec.SmsConfiguration.SNSRegion != nil {
-			f12.SetSnsRegion(*r.ko.Spec.SmsConfiguration.SNSRegion)
+			f13.SnsRegion = r.ko.Spec.SmsConfiguration.SNSRegion
 		}
-		res.SetSmsConfiguration(f12)
+		res.SmsConfiguration = f13
 	}
 	if r.ko.Spec.SmsVerificationMessage != nil {
-		res.SetSmsVerificationMessage(*r.ko.Spec.SmsVerificationMessage)
+		res.SmsVerificationMessage = r.ko.Spec.SmsVerificationMessage
 	}
 	if r.ko.Spec.UserAttributeUpdateSettings != nil {
-		f14 := &svcsdk.UserAttributeUpdateSettingsType{}
+		f15 := &svcsdktypes.UserAttributeUpdateSettingsType{}
 		if r.ko.Spec.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate != nil {
-			f14f0 := []*string{}
-			for _, f14f0iter := range r.ko.Spec.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate {
-				var f14f0elem string
-				f14f0elem = *f14f0iter
-				f14f0 = append(f14f0, &f14f0elem)
+			f15f0 := []svcsdktypes.VerifiedAttributeType{}
+			for _, f15f0iter := range r.ko.Spec.UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate {
+				var f15f0elem string
+				f15f0elem = string(*f15f0iter)
+				f15f0 = append(f15f0, svcsdktypes.VerifiedAttributeType(f15f0elem))
 			}
-			f14.SetAttributesRequireVerificationBeforeUpdate(f14f0)
+			f15.AttributesRequireVerificationBeforeUpdate = f15f0
 		}
-		res.SetUserAttributeUpdateSettings(f14)
+		res.UserAttributeUpdateSettings = f15
 	}
 	if r.ko.Spec.UserPoolAddOns != nil {
-		f15 := &svcsdk.UserPoolAddOnsType{}
+		f16 := &svcsdktypes.UserPoolAddOnsType{}
 		if r.ko.Spec.UserPoolAddOns.AdvancedSecurityMode != nil {
-			f15.SetAdvancedSecurityMode(*r.ko.Spec.UserPoolAddOns.AdvancedSecurityMode)
+			f16.AdvancedSecurityMode = svcsdktypes.AdvancedSecurityModeType(*r.ko.Spec.UserPoolAddOns.AdvancedSecurityMode)
 		}
-		res.SetUserPoolAddOns(f15)
+		res.UserPoolAddOns = f16
 	}
 	if r.ko.Status.ID != nil {
-		res.SetUserPoolId(*r.ko.Status.ID)
+		res.UserPoolId = r.ko.Status.ID
 	}
 	if r.ko.Spec.UserPoolTags != nil {
-		f17 := map[string]*string{}
-		for f17key, f17valiter := range r.ko.Spec.UserPoolTags {
-			var f17val string
-			f17val = *f17valiter
-			f17[f17key] = &f17val
-		}
-		res.SetUserPoolTags(f17)
+		res.UserPoolTags = aws.ToStringMap(r.ko.Spec.UserPoolTags)
 	}
 	if r.ko.Spec.VerificationMessageTemplate != nil {
-		f18 := &svcsdk.VerificationMessageTemplateType{}
+		f20 := &svcsdktypes.VerificationMessageTemplateType{}
 		if r.ko.Spec.VerificationMessageTemplate.DefaultEmailOption != nil {
-			f18.SetDefaultEmailOption(*r.ko.Spec.VerificationMessageTemplate.DefaultEmailOption)
+			f20.DefaultEmailOption = svcsdktypes.DefaultEmailOptionType(*r.ko.Spec.VerificationMessageTemplate.DefaultEmailOption)
 		}
 		if r.ko.Spec.VerificationMessageTemplate.EmailMessage != nil {
-			f18.SetEmailMessage(*r.ko.Spec.VerificationMessageTemplate.EmailMessage)
+			f20.EmailMessage = r.ko.Spec.VerificationMessageTemplate.EmailMessage
 		}
 		if r.ko.Spec.VerificationMessageTemplate.EmailMessageByLink != nil {
-			f18.SetEmailMessageByLink(*r.ko.Spec.VerificationMessageTemplate.EmailMessageByLink)
+			f20.EmailMessageByLink = r.ko.Spec.VerificationMessageTemplate.EmailMessageByLink
 		}
 		if r.ko.Spec.VerificationMessageTemplate.EmailSubject != nil {
-			f18.SetEmailSubject(*r.ko.Spec.VerificationMessageTemplate.EmailSubject)
+			f20.EmailSubject = r.ko.Spec.VerificationMessageTemplate.EmailSubject
 		}
 		if r.ko.Spec.VerificationMessageTemplate.EmailSubjectByLink != nil {
-			f18.SetEmailSubjectByLink(*r.ko.Spec.VerificationMessageTemplate.EmailSubjectByLink)
+			f20.EmailSubjectByLink = r.ko.Spec.VerificationMessageTemplate.EmailSubjectByLink
 		}
 		if r.ko.Spec.VerificationMessageTemplate.SmsMessage != nil {
-			f18.SetSmsMessage(*r.ko.Spec.VerificationMessageTemplate.SmsMessage)
+			f20.SmsMessage = r.ko.Spec.VerificationMessageTemplate.SmsMessage
 		}
-		res.SetVerificationMessageTemplate(f18)
+		res.VerificationMessageTemplate = f20
 	}
 
 	return res, nil
@@ -1686,7 +1668,7 @@ func (rm *resourceManager) sdkDelete(
 	}
 	var resp *svcsdk.DeleteUserPoolOutput
 	_ = resp
-	resp, err = rm.sdkapi.DeleteUserPoolWithContext(ctx, input)
+	resp, err = rm.sdkapi.DeleteUserPool(ctx, input)
 	rm.metrics.RecordAPICall("DELETE", "DeleteUserPool", err)
 	return nil, err
 }
@@ -1699,7 +1681,7 @@ func (rm *resourceManager) newDeleteRequestPayload(
 	res := &svcsdk.DeleteUserPoolInput{}
 
 	if r.ko.Status.ID != nil {
-		res.SetUserPoolId(*r.ko.Status.ID)
+		res.UserPoolId = r.ko.Status.ID
 	}
 
 	return res, nil
@@ -1807,11 +1789,12 @@ func (rm *resourceManager) terminalAWSError(err error) bool {
 	if err == nil {
 		return false
 	}
-	awsErr, ok := ackerr.AWSError(err)
-	if !ok {
+
+	var terminalErr smithy.APIError
+	if !errors.As(err, &terminalErr) {
 		return false
 	}
-	switch awsErr.Code() {
+	switch terminalErr.ErrorCode() {
 	case "InvalidParameterException":
 		return true
 	default:
